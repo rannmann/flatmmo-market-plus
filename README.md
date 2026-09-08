@@ -35,9 +35,14 @@ price information" opens a second browser tab, and the item picker is a raw
 ## Install
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) or Greasemonkey.
-2. Install [FlatMMO+](https://greasyfork.org/scripts/544062) — this is a plugin
-   for it, not a standalone script.
-3. Install `dist/flatmmo-market-plus.user.js`.
+2. **[Install FlatMMO Market+](https://raw.githubusercontent.com/rannmann/flatmmo-market-plus/main/dist/flatmmo-market-plus.user.js)**
+   — your script manager will offer to install it, and will keep it updated from
+   the same URL.
+
+FlatMMO+ itself is a prerequisite, but you do not have to install it separately:
+if nothing on the page has already loaded it, this plugin fetches it for you.
+If you would rather install it yourself, it is
+[here](https://greasyfork.org/scripts/544062).
 
 Settings live under the FlatMMO+ panel in game.
 
@@ -136,6 +141,29 @@ The parser handles `buy` records regardless, and the ledger keeps everything it
 has ever seen, so P/L becomes real the moment purchases start arriving -- either
 because the game begins reporting them, or because you make one while the plugin
 is running.
+
+## A caveat on your lifetime totals
+
+Per-item totals come from the game's history feed, and that feed does not
+reconcile with the game's own `Sales` figure. Measured on a live account with
+nothing pending collection:
+
+| Source | Total |
+| ------ | ----- |
+| The game's HISTORY panel, summed | 29,619,927 |
+| The game's own `Sales` stat | 16,251,213 |
+| This plugin's ledger | 23,072,510 |
+
+The feed re-reports an open order as its sold-count grows, so one listing was
+observed as three rows -- 25, then 391, then 67,451 units of the same order on
+the same day. The ledger collapses those, which is why its figure sits below the
+raw feed, but it still exceeds `Sales` by 6.8M and the remainder is unexplained.
+
+So treat lifetime totals as "what the game has reported", not as ground truth.
+Individual trade rows are each real reported transactions, and the average sale
+price is a ratio of two similarly-affected numbers, so both are more trustworthy
+than the totals. A stable order id in the feed would resolve this completely and
+let the merge heuristic be deleted.
 
 ## Storage
 

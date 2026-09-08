@@ -19,6 +19,10 @@ const banner = `// ==UserScript==
 // @license      MIT
 // @match        *://flatmmo.com/play.php*
 // @grant        none
+// @homepageURL  https://github.com/rannmann/flatmmo-market-plus
+// @supportURL   https://github.com/rannmann/flatmmo-market-plus/issues
+// @downloadURL  https://raw.githubusercontent.com/rannmann/flatmmo-market-plus/main/dist/flatmmo-market-plus.user.js
+// @updateURL    https://raw.githubusercontent.com/rannmann/flatmmo-market-plus/main/dist/flatmmo-market-plus.user.js
 // ==/UserScript==
 `;
 
