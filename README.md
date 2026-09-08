@@ -97,6 +97,20 @@ the single file a userscript has to be. Game-facing selectors and WebSocket
 command names are confined to `src/protocol.js` and `src/ui/`, so a game update
 breaks one feature rather than the whole plugin — every hook fails soft.
 
+## Releasing
+
+```bash
+npm version patch   # or minor / major
+```
+
+That runs the tests, bumps `package.json`, rebuilds `dist/` so the userscript's
+`@version` matches, stages the rebuilt file into the version commit, then pushes
+the commit and its tag. The tag therefore always points at a build whose banner
+agrees with it, and `test/version.test.js` fails the release if it ever does not.
+
+Script managers poll `@updateURL` and compare `@version`, so a release that
+forgets to rebuild would silently offer nobody the update.
+
 ## Read-only
 
 The plugin listens to market frames the server already sends and reads public
