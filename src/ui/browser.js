@@ -13,11 +13,13 @@ import { PREFIX } from './styles.js';
 import { buildSparkline, toEpoch } from '../chart.js';
 import { formatCoins } from '../valuation.js';
 import { searchItems } from '../search.js';
+import { ownershipLabel } from '../orders.js';
 
 export function createMarketBrowser({
   flatstats,
   itemIndex,
   ledger = null,
+  orders = null,
   doc = document,
   log = () => {},
 }) {
@@ -142,8 +144,8 @@ export function createMarketBrowser({
     const ladders = doc.createElement('div');
     ladders.className = `${PREFIX}-ladders`;
     ladders.append(
-      ladder('Buy orders', detail?.book?.buys || [], 'buy'),
-      ladder('Sell orders', detail?.book?.sells || [], 'sell')
+      ladder('Buy orders', detail?.book?.buys || [], 'buy', name),
+      ladder('Sell orders', detail?.book?.sells || [], 'sell', name)
     );
     body.appendChild(ladders);
 
@@ -240,8 +242,11 @@ export function createMarketBrowser({
     return wrap;
   }
 
-  /** One side of the book, with a running total so depth is readable at a glance. */
-  function ladder(title, rows, side) {
+  /**
+   * One side of the book, with a running total so depth is readable at a glance,
+   * and the player's own resting orders marked.
+   */
+  function ladder(title, rows, side, itemName) {
     const wrap = doc.createElement('div');
     wrap.className = `${PREFIX}-ladder`;
 
@@ -267,9 +272,17 @@ export function createMarketBrowser({
     let cumulative = 0;
     for (const row of rows) {
       cumulative += row.quantity;
+      const mine = orders
+        ? orders.remainingAt({ itemName, direction: side, price: row.price })
+        : 0;
+      const label = ownershipLabel(mine, row.quantity);
+
       const tr = doc.createElement('tr');
+      if (label) tr.className = `${PREFIX}-mine`;
       tr.innerHTML =
-        `<td class="${PREFIX}-${side === 'buy' ? 'good' : 'bad'}">${formatCoins(row.price)}</td>` +
+        `<td class="${PREFIX}-${side === 'buy' ? 'good' : 'bad'}">${formatCoins(row.price)}` +
+        (label ? `<span class="${PREFIX}-tag">${escapeHtml(label)}</span>` : '') +
+        `</td>` +
         `<td>${formatCoins(row.quantity)}</td>` +
         `<td class="${PREFIX}-muted">${formatCoins(cumulative)}</td>`;
       tbody.appendChild(tr);

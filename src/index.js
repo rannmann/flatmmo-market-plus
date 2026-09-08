@@ -148,6 +148,7 @@ export function definePlugin({ FlatMMOPlusPlugin, FlatMMOPlus, about }) {
           flatstats: this.flatstats,
           itemIndex: this.itemIndex,
           ledger: this.getConfig('enableLedger') !== false ? this.ledger : null,
+          orders: this.orders,
           log: (...a) => this.log(...a),
         });
         this.interception = installMarketInterception({

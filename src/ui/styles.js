@@ -153,6 +153,22 @@ export const CSS = `
 .${PREFIX}-sheet .${PREFIX}-bad { color: #ff9b8e; }
 .${PREFIX}-sheet .${PREFIX}-muted { color: #8a8a8a; }
 .${PREFIX}-row-click { cursor: pointer; }
+
+/* A price level containing the player's own resting orders. */
+.${PREFIX}-mine td { background: rgba(140, 233, 154, 0.09); }
+.${PREFIX}-mine td:first-child { box-shadow: inset 3px 0 0 #8ce99a; }
+.${PREFIX}-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: #8ce99a;
+  color: #10240f;
+  font-size: 0.68rem;
+  font-weight: 700;
+  vertical-align: middle;
+  white-space: nowrap;
+}
 .${PREFIX}-table-hover tbody tr:hover { background: #262626; }
 
 .${PREFIX}-controls { display: flex; gap: 8px; margin-bottom: 10px; }

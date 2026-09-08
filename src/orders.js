@@ -32,6 +32,10 @@ export function createOrderTracker({
   // binding with its own world-map class. See the note in flatstats.js.
   let orders = Object.create(null);
   let trackedSince = null;
+  // The current listings, replaced wholesale on every frame. The game rebuilds
+  // its postings list from scratch each time, so the frame is the complete set
+  // of live orders -- anything missing from it is no longer active.
+  let active = [];
 
   function load() {
     if (!storage) return;
@@ -70,6 +74,7 @@ export function createOrderTracker({
      */
     observe(batch) {
       if (!Array.isArray(batch)) return 0;
+      active = batch.filter((o) => o && o.uuid);
       if (trackedSince === null) {
         // Marks the boundary between exact tracking and the approximate
         // history-feed backfill, so the two are never silently blended.
@@ -97,6 +102,27 @@ export function createOrderTracker({
       }
       if (changed > 0) persist();
       return changed;
+    },
+
+    /** The player's currently live orders. */
+    active() {
+      return active.slice();
+    },
+
+    /**
+     * How many units of the player's own still sit at one price level.
+     *
+     * Used to mark the order book with what is theirs. Only the unsold
+     * remainder counts, since a filled portion is no longer resting on the book.
+     */
+    remainingAt({ itemName, direction, price }) {
+      let total = 0;
+      for (const o of active) {
+        if (o.itemName !== itemName || o.direction !== direction || o.price !== price) continue;
+        const remaining = (o.amount || 0) - (o.amountSold || 0);
+        if (remaining > 0) total += remaining;
+      }
+      return total;
     },
 
     /** When exact tracking began; null until the first observation. */
@@ -182,4 +208,18 @@ function safeLocalStorage() {
   } catch {
     return null;
   }
+}
+
+/**
+ * How to label a price level that contains some of the player's own orders.
+ *
+ * Returns null when none of it is theirs. The book comes from flatstats, which
+ * crawls every couple of minutes, while the order list is live -- so the two can
+ * disagree briefly. A holding larger than the level is therefore reported as the
+ * whole level rather than as an impossible surplus.
+ */
+export function ownershipLabel(mine, levelQuantity) {
+  if (!Number.isFinite(mine) || mine <= 0) return null;
+  if (!Number.isFinite(levelQuantity) || mine >= levelQuantity) return 'all yours';
+  return `${mine.toLocaleString('en-US')} yours`;
 }

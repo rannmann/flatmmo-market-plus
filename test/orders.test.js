@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createOrderTracker, summariseOrders } from '../src/orders.js';
+import { createOrderTracker, summariseOrders, ownershipLabel } from '../src/orders.js';
 import { parsePostings } from '../src/protocol.js';
 
 function fakeStorage() {
@@ -130,5 +130,67 @@ describe('summariseOrders', () => {
 
   it('handles nothing tracked', () => {
     expect(summariseOrders([])).toMatchObject({ orders: 0, soldUnits: 0, realised: null });
+  });
+});
+
+describe('remainingAt', () => {
+  const build = (rows) => parsePostings(rows.flatMap((r) => listing(r)));
+
+  it('counts only the unsold remainder of the player\'s orders', () => {
+    const t = createOrderTracker({ storage: fakeStorage() });
+    t.observe(build([{ uuid: 'a', price: 83, amount: 1000, sold: 400 }]));
+    expect(t.remainingAt({ itemName: 'unpowered_orb', direction: 'sell', price: 83 })).toBe(600);
+  });
+
+  it('adds up several orders resting at the same price', () => {
+    const t = createOrderTracker({ storage: fakeStorage() });
+    t.observe(build([
+      { uuid: 'a', price: 83, amount: 100, sold: 0 },
+      { uuid: 'b', price: 83, amount: 250, sold: 50 },
+    ]));
+    expect(t.remainingAt({ itemName: 'unpowered_orb', direction: 'sell', price: 83 })).toBe(300);
+  });
+
+  it('does not confuse sides, prices or items', () => {
+    const t = createOrderTracker({ storage: fakeStorage() });
+    t.observe(build([{ uuid: 'a', price: 83, amount: 100, sold: 0, direction: 'sell' }]));
+    expect(t.remainingAt({ itemName: 'unpowered_orb', direction: 'buy', price: 83 })).toBe(0);
+    expect(t.remainingAt({ itemName: 'unpowered_orb', direction: 'sell', price: 84 })).toBe(0);
+    expect(t.remainingAt({ itemName: 'stardust', direction: 'sell', price: 83 })).toBe(0);
+  });
+
+  it('ignores a fully filled order, which no longer rests on the book', () => {
+    const t = createOrderTracker({ storage: fakeStorage() });
+    t.observe(build([{ uuid: 'a', price: 83, amount: 100, sold: 100 }]));
+    expect(t.remainingAt({ itemName: 'unpowered_orb', direction: 'sell', price: 83 })).toBe(0);
+  });
+
+  it('drops orders absent from the newest frame', () => {
+    // The game rebuilds its postings list wholesale, so a missing order is gone.
+    const t = createOrderTracker({ storage: fakeStorage() });
+    t.observe(build([{ uuid: 'a', price: 83, amount: 100, sold: 0 }]));
+    t.observe(build([{ uuid: 'b', price: 90, amount: 50, sold: 0 }]));
+    expect(t.remainingAt({ itemName: 'unpowered_orb', direction: 'sell', price: 83 })).toBe(0);
+    expect(t.remainingAt({ itemName: 'unpowered_orb', direction: 'sell', price: 90 })).toBe(50);
+  });
+});
+
+describe('ownershipLabel', () => {
+  it('says nothing when none of the level is yours', () => {
+    expect(ownershipLabel(0, 100)).toBeNull();
+    expect(ownershipLabel(NaN, 100)).toBeNull();
+  });
+
+  it('reports a partial holding', () => {
+    expect(ownershipLabel(1200, 5000)).toBe('1,200 yours');
+  });
+
+  it('reports the whole level when you hold all of it', () => {
+    expect(ownershipLabel(5000, 5000)).toBe('all yours');
+  });
+
+  it('caps rather than claiming more than the level holds', () => {
+    // The book is crawled every couple of minutes; the order list is live.
+    expect(ownershipLabel(9000, 5000)).toBe('all yours');
   });
 });
