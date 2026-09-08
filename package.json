@@ -1,0 +1,17 @@
+{
+  "name": "flatmmo-market-plus",
+  "version": "0.1.0",
+  "description": "FlatMMO+ plugin that rebuilds the in-game Global Market UI",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "vitest": "^3.0.0"
+  }
+}
