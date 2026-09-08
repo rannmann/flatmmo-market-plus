@@ -501,6 +501,208 @@
     return null;
   }
 
+  // src/protocol.js
+  var MARKET_COMMANDS = {
+    OPEN: "OPEN_MARKET_UI",
+    ITEM_SELECTED: "CHANGED_MARKET_ITEM_POSTING_UI_SELECT",
+    POSTINGS: "REFRESH_MARKET_UI_POSTINGS",
+    HISTORY: "REFRESH_MARKET_UI_HISTORY",
+    STATS: "REFRESH_MARKET_UI_SPENDING_STATS",
+    LOADING: "REFRESH_MARKET_UI_POSTINGS_LOADING_SCREEN"
+  };
+  function parseFrame(raw) {
+    if (typeof raw !== "string") return null;
+    const split = raw.indexOf("=");
+    if (split === -1) return null;
+    const command = raw.slice(0, split);
+    if (!command) return null;
+    const rest = raw.slice(split + 1);
+    return { command, values: rest === "" ? [] : rest.split("~") };
+  }
+  function parseItemSelected(values) {
+    if (!Array.isArray(values) || values.length < 3) return null;
+    const item = values[0];
+    const bankAmount = Number.parseInt(values[1], 10);
+    const coins = Number.parseInt(values[2], 10);
+    if (!item || Number.isNaN(bankAmount) || Number.isNaN(coins)) return null;
+    return { item, bankAmount, coins };
+  }
+  var POSTING_FIELDS = [
+    "id",
+    "itemName",
+    "price",
+    "amount",
+    "amountSold",
+    "toCollect",
+    "status",
+    "createdAt",
+    "direction",
+    "uuid",
+    "refundAmount"
+  ];
+  function parsePostings(values) {
+    if (!Array.isArray(values) || values.length === 0) return [];
+    if (values[0] === "none") return [];
+    const postings = [];
+    const size = POSTING_FIELDS.length;
+    for (let i = 0; i + size <= values.length; i += size) {
+      const posting = {};
+      for (let f = 0; f < size; f++) {
+        posting[POSTING_FIELDS[f]] = values[i + f];
+      }
+      posting.price = Number.parseInt(posting.price, 10);
+      posting.amount = Number.parseInt(posting.amount, 10);
+      posting.amountSold = Number.parseInt(posting.amountSold, 10);
+      posting.toCollect = Number.parseInt(posting.toCollect, 10);
+      postings.push(posting);
+    }
+    return postings;
+  }
+  var HISTORY_FIELDS = ["itemName", "price", "amount", "tax", "direction", "completedAt"];
+  function parseHistory(values) {
+    if (!Array.isArray(values) || values.length === 0) return [];
+    if (values[0] === "none") return [];
+    const out = [];
+    const size = HISTORY_FIELDS.length;
+    for (let i = 0; i + size <= values.length; i += size) {
+      const entry = {};
+      for (let f = 0; f < size; f++) entry[HISTORY_FIELDS[f]] = values[i + f];
+      entry.price = Number.parseInt(entry.price, 10);
+      entry.amount = Number.parseInt(entry.amount, 10);
+      entry.tax = Number.parseInt(entry.tax, 10) || 0;
+      if (!entry.itemName || Number.isNaN(entry.price) || Number.isNaN(entry.amount)) continue;
+      if (entry.direction !== "buy" && entry.direction !== "sell") continue;
+      out.push(entry);
+    }
+    return out;
+  }
+  function historyKey(entry) {
+    return [entry.itemName, entry.direction, entry.price, entry.completedAt].join("|");
+  }
+
+  // src/ledger.js
+  var STORAGE_KEY2 = "fmp-market-plus:ledger";
+  var CACHE_VERSION2 = 1;
+  function createLedger({ storage = safeLocalStorage2(), log = () => {
+  } } = {}) {
+    let entries = /* @__PURE__ */ Object.create(null);
+    function load() {
+      if (!storage) return;
+      try {
+        const raw = storage.getItem(STORAGE_KEY2);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (parsed.version !== CACHE_VERSION2 || !Array.isArray(parsed.entries)) return;
+        for (const e of parsed.entries) {
+          const key = historyKey(e);
+          if (supersedes(e, entries[key])) entries[key] = e;
+        }
+      } catch (err) {
+        log("ledger unreadable, starting fresh:", err && err.message);
+      }
+    }
+    function persist() {
+      if (!storage) return;
+      try {
+        storage.setItem(
+          STORAGE_KEY2,
+          JSON.stringify({ version: CACHE_VERSION2, entries: Object.values(entries) })
+        );
+      } catch (err) {
+        log("could not persist ledger:", err && err.message);
+      }
+    }
+    load();
+    return {
+      /**
+       * Merge a batch of parsed history entries. Returns how many changed.
+       *
+       * Entries recovered from rendered markup carry `provisional: true` because
+       * that source has no tax and only a derived unit price. An authoritative
+       * frame therefore replaces a provisional entry for the same transaction,
+       * while a provisional entry never overwrites real data.
+       */
+      record(batch) {
+        if (!Array.isArray(batch) || batch.length === 0) return 0;
+        let changed = 0;
+        for (const entry of batch) {
+          const key = historyKey(entry);
+          const existing = entries[key];
+          if (!existing || supersedes(entry, existing)) {
+            entries[key] = entry;
+            changed++;
+          }
+        }
+        if (changed > 0) persist();
+        return changed;
+      },
+      /** Every recorded transaction for one item, newest first. */
+      tradesFor(itemName) {
+        return Object.values(entries).filter((e) => e.itemName === itemName).sort((a, b) => String(b.completedAt).localeCompare(String(a.completedAt)));
+      },
+      summaryFor(itemName) {
+        return summarise2(this.tradesFor(itemName));
+      },
+      size() {
+        return Object.keys(entries).length;
+      },
+      /** Drop everything. */
+      clear() {
+        entries = /* @__PURE__ */ Object.create(null);
+        persist();
+      }
+    };
+  }
+  function supersedes(next, current) {
+    if (!current) return true;
+    if (current.provisional && !next.provisional) return true;
+    if (!current.provisional && next.provisional) return false;
+    return next.amount > current.amount;
+  }
+  function summarise2(trades) {
+    let soldUnits = 0;
+    let soldGross = 0;
+    let soldTax = 0;
+    let boughtUnits = 0;
+    let boughtSpend = 0;
+    for (const t of trades) {
+      if (t.direction === "sell") {
+        soldUnits += t.amount;
+        soldGross += t.amount * t.price;
+        soldTax += t.tax || 0;
+      } else if (t.direction === "buy") {
+        boughtUnits += t.amount;
+        boughtSpend += t.amount * t.price;
+      }
+    }
+    const avgSalePrice = soldUnits > 0 ? soldGross / soldUnits : null;
+    const avgCostBasis = boughtUnits > 0 ? boughtSpend / boughtUnits : null;
+    const costBasisKnown = boughtUnits > 0;
+    const matchedUnits = costBasisKnown ? Math.min(soldUnits, boughtUnits) : 0;
+    const realised = costBasisKnown && matchedUnits > 0 ? matchedUnits * (avgSalePrice - avgCostBasis) - soldTax * matchedUnits / (soldUnits || 1) : null;
+    return {
+      trades: trades.length,
+      soldUnits,
+      soldGross,
+      soldTax,
+      soldNet: soldGross - soldTax,
+      avgSalePrice,
+      boughtUnits,
+      boughtSpend,
+      avgCostBasis,
+      costBasisKnown,
+      matchedUnits,
+      realised
+    };
+  }
+  function safeLocalStorage2() {
+    try {
+      return typeof localStorage !== "undefined" ? localStorage : null;
+    } catch {
+      return null;
+    }
+  }
+
   // src/ui/postingModal.js
   var IDS = {
     amount: "market-select-item-amount",
@@ -516,6 +718,7 @@
     period = "7d",
     showVerdict = true,
     ledger = null,
+    orders = null,
     getVendorPrice = () => null
   } = {}) {
     let selection = null;
@@ -650,7 +853,7 @@
           }
         }
       }
-      if (ledger) panel.append(...historyRows(selection.item, summary));
+      if (ledger || orders) panel.append(...historyRows(selection.item, summary));
       for (const [field, raw] of [
         ["Amount", rawAmount],
         ["Price", rawPrice]
@@ -660,12 +863,19 @@
       }
     }
     function historyRows(itemName, marketSummary) {
-      const stats = ledger.summaryFor(itemName);
-      if (!stats || stats.trades === 0) return [];
+      const tracked = orders ? orders.summaryFor(itemName) : null;
+      const since = orders ? orders.since() : null;
+      const sinceDay = since ? String(since).slice(0, 10) : null;
+      const earlierTrades = ledger ? ledger.tradesFor(itemName).filter((e) => !sinceDay || String(e.completedAt) < sinceDay) : [];
+      const earlier = summarise2(earlierTrades);
+      const hasTracked = tracked && (tracked.soldUnits > 0 || tracked.boughtUnits > 0);
+      if (!hasTracked && earlier.trades === 0) return [];
       const out = [heading("Your history")];
-      if (stats.soldUnits > 0) {
-        out.push(row("Sold all time", `${formatCoins(stats.soldUnits)} for ${formatCoins(stats.soldNet)}`));
-        const avg = Math.round(stats.avgSalePrice);
+      if (hasTracked && tracked.soldUnits > 0) {
+        out.push(
+          row("Sold (tracked)", `${formatCoins(tracked.soldUnits)} for ${formatCoins(tracked.soldNet)}`)
+        );
+        const avg = Math.round(tracked.avgSalePrice);
         const marketNow = marketSummary ? marketSummary.bestSell : null;
         out.push(
           row(
@@ -675,19 +885,33 @@
           )
         );
       }
-      if (stats.costBasisKnown) {
-        out.push(row("Avg cost", formatCoins(Math.round(stats.avgCostBasis)), "muted"));
+      if (hasTracked && tracked.boughtUnits > 0) {
+        out.push(
+          row("Bought (tracked)", `${formatCoins(tracked.boughtUnits)} for ${formatCoins(tracked.boughtSpend)}`)
+        );
+        out.push(row("Avg cost", formatCoins(Math.round(tracked.avgCostBasis)), "muted"));
+      }
+      if (tracked && tracked.costBasisKnown && tracked.realised !== null) {
         out.push(
           row(
             "Realised P/L",
-            `${stats.realised >= 0 ? "+" : ""}${formatCoins(Math.round(stats.realised))}`,
-            stats.realised >= 0 ? "good" : "bad"
+            `${tracked.realised >= 0 ? "+" : ""}${formatCoins(Math.round(tracked.realised))}`,
+            tracked.realised >= 0 ? "good" : "bad"
           )
         );
-      } else if (stats.soldUnits > 0) {
+      } else if (hasTracked || earlier.soldUnits > 0) {
         out.push(row("Realised P/L", "no purchase record", "muted"));
       }
-      for (const t of ledger.tradesFor(itemName).slice(0, 3)) {
+      if (earlier.soldUnits > 0) {
+        out.push(
+          row(
+            "Earlier (approx)",
+            `${formatCoins(earlier.soldUnits)} for ${formatCoins(earlier.soldNet)}`,
+            "muted"
+          )
+        );
+      }
+      for (const t of (ledger ? ledger.tradesFor(itemName) : []).slice(0, 3)) {
         out.push(
           row(
             `${t.direction === "sell" ? "Sold" : "Bought"} ${String(t.completedAt).slice(0, 10)}`,
@@ -1402,156 +1626,119 @@
     };
   }
 
-  // src/protocol.js
-  var MARKET_COMMANDS = {
-    OPEN: "OPEN_MARKET_UI",
-    ITEM_SELECTED: "CHANGED_MARKET_ITEM_POSTING_UI_SELECT",
-    POSTINGS: "REFRESH_MARKET_UI_POSTINGS",
-    HISTORY: "REFRESH_MARKET_UI_HISTORY",
-    STATS: "REFRESH_MARKET_UI_SPENDING_STATS",
-    LOADING: "REFRESH_MARKET_UI_POSTINGS_LOADING_SCREEN"
-  };
-  function parseFrame(raw) {
-    if (typeof raw !== "string") return null;
-    const split = raw.indexOf("=");
-    if (split === -1) return null;
-    const command = raw.slice(0, split);
-    if (!command) return null;
-    const rest = raw.slice(split + 1);
-    return { command, values: rest === "" ? [] : rest.split("~") };
-  }
-  function parseItemSelected(values) {
-    if (!Array.isArray(values) || values.length < 3) return null;
-    const item = values[0];
-    const bankAmount = Number.parseInt(values[1], 10);
-    const coins = Number.parseInt(values[2], 10);
-    if (!item || Number.isNaN(bankAmount) || Number.isNaN(coins)) return null;
-    return { item, bankAmount, coins };
-  }
-  var HISTORY_FIELDS = ["itemName", "price", "amount", "tax", "direction", "completedAt"];
-  function parseHistory(values) {
-    if (!Array.isArray(values) || values.length === 0) return [];
-    if (values[0] === "none") return [];
-    const out = [];
-    const size = HISTORY_FIELDS.length;
-    for (let i = 0; i + size <= values.length; i += size) {
-      const entry = {};
-      for (let f = 0; f < size; f++) entry[HISTORY_FIELDS[f]] = values[i + f];
-      entry.price = Number.parseInt(entry.price, 10);
-      entry.amount = Number.parseInt(entry.amount, 10);
-      entry.tax = Number.parseInt(entry.tax, 10) || 0;
-      if (!entry.itemName || Number.isNaN(entry.price) || Number.isNaN(entry.amount)) continue;
-      if (entry.direction !== "buy" && entry.direction !== "sell") continue;
-      out.push(entry);
+  // src/orders.js
+  var STORAGE_KEY3 = "fmp-market-plus:orders";
+  var CACHE_VERSION3 = 1;
+  function createOrderTracker({
+    storage = safeLocalStorage3(),
+    now = () => (/* @__PURE__ */ new Date()).toISOString(),
+    log = () => {
     }
-    return out;
-  }
-  function historyKey(entry) {
-    return [entry.itemName, entry.direction, entry.price, entry.completedAt].join("|");
-  }
-
-  // src/ledger.js
-  var STORAGE_KEY2 = "fmp-market-plus:ledger";
-  var CACHE_VERSION2 = 1;
-  function createLedger({ storage = safeLocalStorage2(), log = () => {
-  } } = {}) {
-    let entries = /* @__PURE__ */ Object.create(null);
+  } = {}) {
+    let orders = /* @__PURE__ */ Object.create(null);
+    let trackedSince = null;
     function load() {
       if (!storage) return;
       try {
-        const raw = storage.getItem(STORAGE_KEY2);
+        const raw = storage.getItem(STORAGE_KEY3);
         if (!raw) return;
         const parsed = JSON.parse(raw);
-        if (parsed.version !== CACHE_VERSION2 || !Array.isArray(parsed.entries)) return;
-        for (const e of parsed.entries) {
-          const key = historyKey(e);
-          if (supersedes(e, entries[key])) entries[key] = e;
-        }
+        if (parsed.version !== CACHE_VERSION3) return;
+        trackedSince = parsed.trackedSince || null;
+        for (const o of parsed.orders || []) if (o && o.uuid) orders[o.uuid] = o;
       } catch (err) {
-        log("ledger unreadable, starting fresh:", err && err.message);
+        log("order store unreadable, starting fresh:", err && err.message);
       }
     }
     function persist() {
       if (!storage) return;
       try {
         storage.setItem(
-          STORAGE_KEY2,
-          JSON.stringify({ version: CACHE_VERSION2, entries: Object.values(entries) })
+          STORAGE_KEY3,
+          JSON.stringify({ version: CACHE_VERSION3, trackedSince, orders: Object.values(orders) })
         );
       } catch (err) {
-        log("could not persist ledger:", err && err.message);
+        log("could not persist orders:", err && err.message);
       }
     }
     load();
     return {
       /**
-       * Merge a batch of parsed history entries. Returns how many changed.
+       * Merge a batch of listings. Returns how many orders changed.
        *
-       * Entries recovered from rendered markup carry `provisional: true` because
-       * that source has no tax and only a derived unit price. An authoritative
-       * frame therefore replaces a provisional entry for the same transaction,
-       * while a provisional entry never overwrites real data.
+       * `amountSold` only ever grows, so a smaller figure is a stale snapshot and
+       * is ignored rather than allowed to walk a total backwards.
        */
-      record(batch) {
-        if (!Array.isArray(batch) || batch.length === 0) return 0;
+      observe(batch) {
+        if (!Array.isArray(batch)) return 0;
+        if (trackedSince === null) {
+          trackedSince = now();
+          persist();
+        }
         let changed = 0;
-        for (const entry of batch) {
-          const key = historyKey(entry);
-          const existing = entries[key];
-          if (!existing || supersedes(entry, existing)) {
-            entries[key] = entry;
+        for (const o of batch) {
+          if (!o || !o.uuid) continue;
+          const sold = Number.isFinite(o.amountSold) ? o.amountSold : 0;
+          const existing = orders[o.uuid];
+          if (!existing || sold > existing.amountSold) {
+            orders[o.uuid] = {
+              uuid: o.uuid,
+              itemName: o.itemName,
+              price: o.price,
+              amount: o.amount,
+              amountSold: sold,
+              direction: o.direction,
+              createdAt: o.createdAt,
+              lastSeen: now()
+            };
             changed++;
           }
         }
         if (changed > 0) persist();
         return changed;
       },
-      /** Every recorded transaction for one item, newest first. */
-      tradesFor(itemName) {
-        return Object.values(entries).filter((e) => e.itemName === itemName).sort((a, b) => String(b.completedAt).localeCompare(String(a.completedAt)));
+      /** When exact tracking began; null until the first observation. */
+      since() {
+        return trackedSince;
+      },
+      ordersFor(itemName) {
+        return Object.values(orders).filter((o) => o.itemName === itemName && o.amountSold > 0).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
       },
       summaryFor(itemName) {
-        return summarise2(this.tradesFor(itemName));
+        return summariseOrders(this.ordersFor(itemName));
       },
       size() {
-        return Object.keys(entries).length;
+        return Object.keys(orders).length;
       },
-      /** Drop everything. */
       clear() {
-        entries = /* @__PURE__ */ Object.create(null);
+        orders = /* @__PURE__ */ Object.create(null);
+        trackedSince = null;
         persist();
       }
     };
   }
-  function supersedes(next, current) {
-    if (!current) return true;
-    if (current.provisional && !next.provisional) return true;
-    if (!current.provisional && next.provisional) return false;
-    return next.amount > current.amount;
-  }
-  function summarise2(trades) {
+  function summariseOrders(list) {
     let soldUnits = 0;
     let soldGross = 0;
     let soldTax = 0;
     let boughtUnits = 0;
     let boughtSpend = 0;
-    for (const t of trades) {
-      if (t.direction === "sell") {
-        soldUnits += t.amount;
-        soldGross += t.amount * t.price;
-        soldTax += t.tax || 0;
-      } else if (t.direction === "buy") {
-        boughtUnits += t.amount;
-        boughtSpend += t.amount * t.price;
+    for (const o of list) {
+      if (o.direction === "sell") {
+        soldUnits += o.amountSold;
+        soldGross += o.amountSold * o.price;
+        soldTax += estimateSellTax(o.price, o.amountSold);
+      } else if (o.direction === "buy") {
+        boughtUnits += o.amountSold;
+        boughtSpend += o.amountSold * o.price;
       }
     }
     const avgSalePrice = soldUnits > 0 ? soldGross / soldUnits : null;
     const avgCostBasis = boughtUnits > 0 ? boughtSpend / boughtUnits : null;
     const costBasisKnown = boughtUnits > 0;
     const matchedUnits = costBasisKnown ? Math.min(soldUnits, boughtUnits) : 0;
-    const realised = costBasisKnown && matchedUnits > 0 ? matchedUnits * (avgSalePrice - avgCostBasis) - soldTax * matchedUnits / (soldUnits || 1) : null;
     return {
-      trades: trades.length,
+      orders: list.length,
       soldUnits,
       soldGross,
       soldTax,
@@ -1562,10 +1749,10 @@
       avgCostBasis,
       costBasisKnown,
       matchedUnits,
-      realised
+      realised: costBasisKnown && matchedUnits > 0 ? matchedUnits * (avgSalePrice - avgCostBasis) - soldTax * matchedUnits / (soldUnits || 1) : null
     };
   }
-  function safeLocalStorage2() {
+  function safeLocalStorage3() {
     try {
       return typeof localStorage !== "undefined" ? localStorage : null;
     } catch {
@@ -1670,6 +1857,7 @@
         this.typeahead = null;
         this.interception = null;
         this.ledger = createLedger({ log: (...a) => this.log(...a) });
+        this.orders = createOrderTracker({ log: (...a) => this.log(...a) });
       }
       /**
        * The game's vendor sell prices, from its own `item_sell_prices` global.
@@ -1713,6 +1901,7 @@
           period: this.getConfig("statsPeriod") || "7d",
           showVerdict: this.getConfig("enableVerdict") !== false,
           ledger: this.getConfig("enableLedger") !== false ? this.ledger : null,
+          orders: this.getConfig("enableLedger") !== false ? this.orders : null,
           getVendorPrice: (name) => this.vendorPrice(name)
         });
         if (this.getConfig("enableBrowser") !== false) {
@@ -1782,6 +1971,7 @@
         this.typeahead = null;
         this.interception = null;
         this.ledger = createLedger({ log: (...a) => this.log(...a) });
+        this.orders = createOrderTracker({ log: (...a) => this.log(...a) });
       }
       /**
        * The game's vendor sell prices, from its own `item_sell_prices` global.
@@ -1815,6 +2005,11 @@
           case MARKET_COMMANDS.OPEN:
             this.ensureWired();
             break;
+          case MARKET_COMMANDS.POSTINGS: {
+            const moved = this.orders.observe(parsePostings(frame.values));
+            if (moved > 0) this.log(`${moved} order(s) updated`);
+            break;
+          }
           case MARKET_COMMANDS.HISTORY: {
             const added = this.ledger.record(parseHistory(frame.values));
             if (added > 0) this.log(`recorded ${added} new transaction(s)`);

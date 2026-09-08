@@ -14,8 +14,15 @@ import { createMarketBrowser } from './ui/browser.js';
 import { createTypeahead } from './ui/typeahead.js';
 import { installMarketInterception } from './ui/intercept.js';
 import { ensureStyles } from './ui/styles.js';
-import { parseFrame, parseItemSelected, parseHistory, MARKET_COMMANDS } from './protocol.js';
+import {
+  parseFrame,
+  parseItemSelected,
+  parseHistory,
+  parsePostings,
+  MARKET_COMMANDS,
+} from './protocol.js';
 import { createLedger } from './ledger.js';
+import { createOrderTracker } from './orders.js';
 import { readRenderedHistory } from './domHistory.js';
 
 const PLUGIN_ID = 'marketplus';
@@ -83,6 +90,9 @@ export function definePlugin({ FlatMMOPlusPlugin, FlatMMOPlus, about }) {
       // and rebuilding it on every config change would lose nothing but is
       // pointless churn.
       this.ledger = createLedger({ log: (...a) => this.log(...a) });
+      // Exact accounting, keyed by each listing's uuid. Unlike the ledger this
+      // cannot double-count a refilled order, and it sees purchases.
+      this.orders = createOrderTracker({ log: (...a) => this.log(...a) });
     }
 
     /**
@@ -129,6 +139,7 @@ export function definePlugin({ FlatMMOPlusPlugin, FlatMMOPlus, about }) {
         period: this.getConfig('statsPeriod') || '7d',
         showVerdict: this.getConfig('enableVerdict') !== false,
         ledger: this.getConfig('enableLedger') !== false ? this.ledger : null,
+        orders: this.getConfig('enableLedger') !== false ? this.orders : null,
         getVendorPrice: (name) => this.vendorPrice(name),
       });
 
@@ -216,6 +227,9 @@ export function definePlugin({ FlatMMOPlusPlugin, FlatMMOPlus, about }) {
       // and rebuilding it on every config change would lose nothing but is
       // pointless churn.
       this.ledger = createLedger({ log: (...a) => this.log(...a) });
+      // Exact accounting, keyed by each listing's uuid. Unlike the ledger this
+      // cannot double-count a refilled order, and it sees purchases.
+      this.orders = createOrderTracker({ log: (...a) => this.log(...a) });
     }
 
     /**
@@ -253,6 +267,12 @@ export function definePlugin({ FlatMMOPlusPlugin, FlatMMOPlus, about }) {
         case MARKET_COMMANDS.OPEN:
           this.ensureWired();
           break;
+
+        case MARKET_COMMANDS.POSTINGS: {
+          const moved = this.orders.observe(parsePostings(frame.values));
+          if (moved > 0) this.log(`${moved} order(s) updated`);
+          break;
+        }
 
         case MARKET_COMMANDS.HISTORY: {
           // The feed is re-sent whole each time the panel opens; the ledger

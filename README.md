@@ -142,37 +142,50 @@ has ever seen, so P/L becomes real the moment purchases start arriving -- either
 because the game begins reporting them, or because you make one while the plugin
 is running.
 
-## A caveat on your lifetime totals
+## How accurate your totals are
 
-Per-item totals come from the game's history feed, and that feed does not
-reconcile with the game's own `Sales` figure. Measured on a live account with
+Totals come from two sources, and the UI never blends them.
+
+**Tracked (exact).** Every listing carries a `uuid`, an exact `amountSold` and a
+full timestamp. Orders are tracked by uuid, so a refilled order counts once at
+its true size, and two same-price same-day orders stay distinct. This also sees
+**purchases**, which is what makes profit and loss possible. Everything from the
+moment the plugin is first run is accounted for this way.
+
+The one gap: an order is only visible while it is listed, which lasts until you
+collect its proceeds. Anything that filled *and* was collected while the plugin
+was not running is never seen.
+
+**Earlier (approximate).** Before tracking began there is only the history feed,
+which cannot be made accurate. It re-reports an open order as its sold-count
+grows, carries only a date, and has no order id, so repeated fills are
+indistinguishable from separate sales. One listing was observed as three rows --
+25, then 391, then 67,451 units of the same order on the same day.
+
+And the shortfall is not merely double-counting. Measured on a live account with
 nothing pending collection:
 
-| Source | Total |
-| ------ | ----- |
-| The game's HISTORY panel, summed | 29,619,927 |
+| Reading of the history feed | Total |
+| --------------------------- | ----- |
+| Every row counted | 29,619,927 |
+| Every ambiguous group collapsed to one order | 23,072,510 |
 | The game's own `Sales` stat | 16,251,213 |
-| This plugin's ledger | 23,072,510 |
 
-The feed re-reports an open order as its sold-count grows, so one listing was
-observed as three rows -- 25, then 391, then 67,451 units of the same order on
-the same day. The ledger collapses those, which is why its figure sits below the
-raw feed, but it still exceeds `Sales` by 6.8M and the remainder is unexplained.
+Even the most conservative reading exceeds `Sales` by 6.8M, so no
+de-duplication can reconcile the two. A second accounting discrepancy exists
+beyond the repeated rows. That is why pre-tracking figures are shown separately
+and labelled approximate rather than folded into a total that would otherwise be
+trustworthy.
 
-So treat lifetime totals as "what the game has reported", not as ground truth.
-Individual trade rows are each real reported transactions, and the average sale
-price is a ratio of two similarly-affected numbers, so both are more trustworthy
-than the totals. A stable order id in the feed would resolve this completely and
-let the merge heuristic be deleted.
-
-## Storage
+## Storage## Storage
 
 Two localStorage keys, both versioned:
 
-- `fmp-market-plus:ledger` — your transactions, deduplicated by
-  `item|direction|price|amount|timestamp`. The feed carries no transaction id, so
-  two genuinely distinct trades sharing all five fields collapse into one. The
-  store only ever grows, which means it survives the server truncating history.
+- `fmp-market-plus:orders` — orders tracked by uuid, with the exact sold count
+  and the timestamp tracking began. The authoritative source.
+- `fmp-market-plus:ledger` — the history-feed backfill, keyed by
+  `item|direction|price|timestamp` so repeated fill rows collapse. Approximate;
+  used only for the period before tracking began.
 - `fmp-market-plus:item-index` — item display names and icons, refreshed daily.
 
 ## Not done yet

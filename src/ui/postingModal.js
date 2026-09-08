@@ -22,6 +22,7 @@ import {
 } from '../money.js';
 import { parseGameNumber, describeInputProblem } from '../gameNumber.js';
 import { summarise, priceVerdict, suggestedPrice, formatCoins } from '../valuation.js';
+import { summarise as summariseLedger } from '../ledger.js';
 
 const IDS = {
   amount: 'market-select-item-amount',
@@ -37,6 +38,7 @@ export function createPostingModalEnhancer({
   period = '7d',
   showVerdict = true,
   ledger = null,
+  orders = null,
   getVendorPrice = () => null,
 } = {}) {
   let selection = null; // { item, bankAmount, coins }
@@ -211,7 +213,7 @@ export function createPostingModalEnhancer({
 
     // append(), not appendChild(): appendChild takes a single node and would
     // silently drop every row after the heading.
-    if (ledger) panel.append(...historyRows(selection.item, summary));
+    if (ledger || orders) panel.append(...historyRows(selection.item, summary));
 
     for (const [field, raw] of [
       ['Amount', rawAmount],
@@ -224,44 +226,79 @@ export function createPostingModalEnhancer({
 
   /**
    * What this player has actually done with this item before.
-   * Returns an array so the caller can spread it -- an empty ledger adds nothing.
+   *
+   * Two sources, deliberately never blended. Orders tracked by uuid are exact.
+   * The history-feed backfill covering the period before tracking began is not,
+   * and is labelled as such -- it double-counts refilled orders and cannot be
+   * reconciled with the game's own Sales figure by any interpretation, so
+   * folding it into one total would contaminate a number that is otherwise
+   * trustworthy.
+   *
+   * Returns an array; an empty record adds nothing.
    */
   function historyRows(itemName, marketSummary) {
-    const stats = ledger.summaryFor(itemName);
-    if (!stats || stats.trades === 0) return [];
+    const tracked = orders ? orders.summaryFor(itemName) : null;
+    const since = orders ? orders.since() : null;
+
+    // Entries from the day tracking began are treated as tracked, not earlier,
+    // so a same-day order can never be counted through both paths.
+    const sinceDay = since ? String(since).slice(0, 10) : null;
+    const earlierTrades = ledger
+      ? ledger.tradesFor(itemName).filter((e) => !sinceDay || String(e.completedAt) < sinceDay)
+      : [];
+    const earlier = summariseLedger(earlierTrades);
+
+    const hasTracked = tracked && (tracked.soldUnits > 0 || tracked.boughtUnits > 0);
+    if (!hasTracked && earlier.trades === 0) return [];
 
     const out = [heading('Your history')];
 
-    if (stats.soldUnits > 0) {
-      out.push(row('Sold all time', `${formatCoins(stats.soldUnits)} for ${formatCoins(stats.soldNet)}`));
-      const avg = Math.round(stats.avgSalePrice);
+    if (hasTracked && tracked.soldUnits > 0) {
+      out.push(
+        row('Sold (tracked)', `${formatCoins(tracked.soldUnits)} for ${formatCoins(tracked.soldNet)}`)
+      );
+      const avg = Math.round(tracked.avgSalePrice);
       const marketNow = marketSummary ? marketSummary.bestSell : null;
       out.push(
         row(
           'Your average',
-          marketNow !== null
-            ? `${formatCoins(avg)} (market ${formatCoins(marketNow)})`
-            : formatCoins(avg),
+          marketNow !== null ? `${formatCoins(avg)} (market ${formatCoins(marketNow)})` : formatCoins(avg),
           marketNow !== null && marketNow > avg ? 'good' : 'muted'
         )
       );
     }
 
-    if (stats.costBasisKnown) {
-      out.push(row('Avg cost', formatCoins(Math.round(stats.avgCostBasis)), 'muted'));
+    if (hasTracked && tracked.boughtUnits > 0) {
+      out.push(
+        row('Bought (tracked)', `${formatCoins(tracked.boughtUnits)} for ${formatCoins(tracked.boughtSpend)}`)
+      );
+      out.push(row('Avg cost', formatCoins(Math.round(tracked.avgCostBasis)), 'muted'));
+    }
+
+    if (tracked && tracked.costBasisKnown && tracked.realised !== null) {
       out.push(
         row(
           'Realised P/L',
-          `${stats.realised >= 0 ? '+' : ''}${formatCoins(Math.round(stats.realised))}`,
-          stats.realised >= 0 ? 'good' : 'bad'
+          `${tracked.realised >= 0 ? '+' : ''}${formatCoins(Math.round(tracked.realised))}`,
+          tracked.realised >= 0 ? 'good' : 'bad'
         )
       );
-    } else if (stats.soldUnits > 0) {
-      // Revenue is not profit. Saying so is better than quietly implying it.
+    } else if (hasTracked || earlier.soldUnits > 0) {
+      // Revenue is not profit; saying so beats quietly implying it.
       out.push(row('Realised P/L', 'no purchase record', 'muted'));
     }
 
-    for (const t of ledger.tradesFor(itemName).slice(0, 3)) {
+    if (earlier.soldUnits > 0) {
+      out.push(
+        row(
+          'Earlier (approx)',
+          `${formatCoins(earlier.soldUnits)} for ${formatCoins(earlier.soldNet)}`,
+          'muted'
+        )
+      );
+    }
+
+    for (const t of (ledger ? ledger.tradesFor(itemName) : []).slice(0, 3)) {
       out.push(
         row(
           `${t.direction === 'sell' ? 'Sold' : 'Bought'} ${String(t.completedAt).slice(0, 10)}`,
