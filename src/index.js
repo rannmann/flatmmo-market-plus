@@ -24,6 +24,7 @@ import {
 import { createLedger } from './ledger.js';
 import { createOrderTracker } from './orders.js';
 import { readRenderedHistory } from './domHistory.js';
+import { readRenderedPostings } from './domPostings.js';
 
 const PLUGIN_ID = 'marketplus';
 
@@ -169,6 +170,7 @@ export function definePlugin({ FlatMMOPlusPlugin, FlatMMOPlus, about }) {
       // installed -- which is every one of them when the market panel is
       // already open as the page loads. Marked provisional; real frames win.
       this.seedLedgerFromDom();
+      this.seedOrdersFromDom();
 
       // Warm the name/icon index in the background; the UI degrades to raw
       // snake_case names if it never arrives.
@@ -188,6 +190,22 @@ export function definePlugin({ FlatMMOPlusPlugin, FlatMMOPlus, about }) {
         if (recovered > 0) this.log(`recovered ${recovered} transaction(s) from the page`);
       } catch (err) {
         this.log('could not read rendered history:', err && err.message);
+      }
+    }
+
+    /**
+     * Recover live orders the plugin was not running to hear, for the same
+     * reason as seedLedgerFromDom: the postings frame is sent during login when
+     * the market panel is already open, before the socket hook exists. The
+     * rendered listings carry every field including the uuid, so unlike the
+     * history recovery nothing is lost.
+     */
+    seedOrdersFromDom() {
+      try {
+        const recovered = this.orders.observe(readRenderedPostings(document));
+        if (recovered > 0) this.log(`recovered ${recovered} live order(s) from the page`);
+      } catch (err) {
+        this.log('could not read rendered postings:', err && err.message);
       }
     }
 
